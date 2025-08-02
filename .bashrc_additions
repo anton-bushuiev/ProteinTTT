@@ -1,0 +1,33 @@
+# ProteinTTT Environment Configuration with CUDA
+# Add these lines to your ~/.bashrc
+export USERNAME=""
+export PROJECT_DIR =""
+export PROJECTID=""
+
+# Path configurations
+export PATH=$PATH:$HOME/bin
+export PATH=$PATH:$HOME/.local/bin
+
+# Project-specific configurations
+export WORK="$PROJECT_DIR/$USERNAME"
+export CONDA_DIR="${WORK}/miniconda3"
+
+# CUDA configuration
+module load CUDA/11.7.0
+
+# Conda initialization
+if [ -f "${CONDA_DIR}/etc/profile.d/conda.sh" ]; then
+    source "${CONDA_DIR}/etc/profile.d/conda.sh"
+fi
+
+# Auto-activate proteinttt environment
+if [ -n "$PS1" ] && [ -z "$CONDA_DEFAULT_ENV" ]; then
+    conda activate proteinttt 2>/dev/null || true
+fi
+
+# Useful aliases
+alias activate_proteinttt='conda activate proteinttt'
+alias work_dir='cd $WORK'
+alias protein_ttt='cd $WORK/ProteinTTT'
+alias load_cuda='module load CUDA/11.7.0'
+alias check_cuda='nvcc --version && python -c "import torch; print(f\"CUDA available: {torch.cuda.is_available()}\")"'
