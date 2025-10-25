@@ -1,0 +1,8 @@
+torch>=1.12.0
+transformers>=4.20.0
+fair-esm>=2.0.0
+pytorch-lightning>=1.8.0
+biopython>=1.85
+biotite>=0.40.0
+numpy>=1.24.0
+pandas>=2.0.0
