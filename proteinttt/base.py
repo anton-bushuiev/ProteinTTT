@@ -325,7 +325,6 @@ class TTTModule(torch.nn.Module, ABC):
             best_state = None
 
         # Run TTT loop
-        x = x.to(next(self.parameters()).device)
         loss = None
         self.eval()
         for step in range(self.ttt_cfg.steps * self.ttt_cfg.ags + 1):
@@ -352,9 +351,12 @@ class TTTModule(torch.nn.Module, ABC):
                 )
                 if should_score:
                     score_seq_start_time = time.time()
-                    all_log_probs, perplexity = self._ttt_score_seq(x, **kwargs)
+                    # Take only the input sequence for scoring
+                    seq_to_score = x[0:1, :]
+                    all_log_probs, perplexity = self._ttt_score_seq(seq_to_score, **kwargs)
+                    
                     score_seq_time = time.time() - score_seq_start_time
-                    all_log_probs = [x.detach().cpu() for x in all_log_probs]
+                    all_log_probs = [prob.detach().cpu() for prob in all_log_probs]
                     ttt_step_data[step // self.ttt_cfg.ags][
                         "all_log_probs"
                     ] = all_log_probs
@@ -432,6 +434,14 @@ class TTTModule(torch.nn.Module, ABC):
             # Last step is just for logging
             if step == self.ttt_cfg.steps * self.ttt_cfg.ags:
                 break
+
+            # Move the sampled batch to the GPU
+            device = next(self.parameters()).device
+            batch_masked = batch_masked.to(device)
+            targets = targets.to(device)
+            mask = mask.to(device)
+            if start_indices is not None:
+                start_indices = start_indices.to(device)
 
             # Forward pass
             self.train()
@@ -680,14 +690,14 @@ class TTTModule(torch.nn.Module, ABC):
         The whole modules rather than parameters are saved to avoid support changing
         modules such as in the case of LoRA.
 
-        TODO: Optimize memory by only saving modules from _ttt_get_trainable_modules()
-
         Returns:
             Dictionary mapping module names to their copied states
         """
         state = {}
+        trainable_modules = set(self._ttt_get_trainable_modules())
         for name, module in self.named_children():
-            state[name] = copy.deepcopy(module)
+            if module in trainable_modules:
+                state[name] = copy.deepcopy(module)
         return state
 
     def _ttt_set_state(self, state: T.Any) -> None:

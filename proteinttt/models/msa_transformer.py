@@ -1,4 +1,5 @@
 import typing as T
+from pathlib import Path
 
 import torch
 import esm
@@ -23,25 +24,47 @@ class MSATransformerTTT(TTTModule, MSATransformer):
         TTTModule.__init__(self, ttt_cfg=ttt_cfg)
         self.ttt_alphabet = esm.Alphabet.from_architecture("msa_transformer")
         self.ttt_batch_converter = self.ttt_alphabet.get_batch_converter()
-
+    
     def _ttt_tokenize(self, seq: str, **kwargs) -> torch.Tensor:
         # Check that MSA is provided
-        # TODO Extend to have option to read MSA from file
         assert "msa" in kwargs, "MSA must be provided"
-        msa = kwargs["msa"]
+        msa_input = kwargs["msa"]
+
+        if isinstance(msa_input, torch.Tensor):
+            msa = msa_input
+        elif isinstance(msa_input, (str, Path)):
+            msa_data = esm.data.read_msa(str(msa_input))
+            # Check that the first sequence in the MSA file matches the input seq
+            msa_ref_seq_ungapped = msa_data[0][1].replace("-", "")
+            assert (
+                msa_ref_seq_ungapped == seq
+            ), "First sequence in MSA file (ungapped) does not match input sequence"
+            # Tokenize the MSA data
+            _, _, msa = self.ttt_batch_converter(
+                [msa_data]
+            )  # [msa_data] makes it a batch of 1
+        else:
+            raise TypeError(
+                "MSA must be a torch.Tensor or a file path (str or Path)"
+            )
+
         assert isinstance(msa, torch.Tensor), "MSA must be a tensor"
         assert (
             msa.ndim == 3
         ), "MSA must be a 3D tensor with shape [bs, msa_len, seq_len]"
         assert msa.shape[0] == 1, "Only one MSA should be provided"
 
-        # Check that first sequence in MSA is the same seq as the target sequence
+        # Check that first sequence in MSA tensor is the same as the target sequence
         _, _, seq_tokens = self.ttt_batch_converter([("seq", seq)])
+        assert seq_tokens.shape[1] == msa.shape[2], (
+            f"Tokenized seq length ({seq_tokens.shape[1]}) does not match "
+            f"MSA sequence length ({msa.shape[2]})"
+        )
         assert torch.all(
             seq_tokens[0, :] == msa[0, 0, :]
-        ), "First sequence in MSA must be the same as the input sequence"
+        ), "First sequence in MSA tensor must be the same as the input sequence"
 
-        return msa  # [1, msa_len, seq_len]
+        return msa  # [1, msa_len, seq_len]  
 
     def _ttt_get_frozen_modules(self) -> list[torch.nn.Module]:
         return [
