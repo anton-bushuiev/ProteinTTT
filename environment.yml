@@ -1,0 +1,43 @@
+name: proteinttt
+channels:
+  - pytorch
+  - nvidia
+  - conda-forge
+  - bioconda
+dependencies:
+  - python=3.10.18  
+  - pytorch=1.13.1
+  - torchvision=0.14.1
+  - torchaudio=0.13.1
+  - pytorch-cuda=11.7
+  - cudatoolkit=11.7
+  - numpy=1.26.4
+  - scipy=1.15.3
+  - pandas=2.3.1
+  - biopython=1.85
+  - tqdm=4.67.1
+  - pyyaml=6.0.2
+  - requests=2.32.4
+  - click=8.2.1
+  - pip
+  - pip:
+    - --find-links https://download.pytorch.org/whl/torch_stable.html
+    - torch==1.13.1+cu117
+    - torchvision==0.14.1+cu117
+    - torchaudio==0.13.1+cu117
+
+    - "fair-esm[esmfold]"
+    - pytorch-lightning==1.8.4
+    - torchmetrics==0.10.3
+    - wandb==0.21.0
+    - tensorboardX==2.6.4
+    - einops==0.8.1
+    - omegaconf==2.3.0
+    - biotite==0.40.0
+    - huggingface-hub==0.16.4
+    - fire==0.7.0
+    - transformers==4.30.0
+    - diffusers==0.15.0
+    - ml-collections
+    - dm-tree
+    - einops
