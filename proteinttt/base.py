@@ -332,11 +332,7 @@ class TTTModule(torch.nn.Module, ABC):
         if self.ttt_cfg.automatic_best_state_reset:
             best_confidence = 0
             best_state = None
-        score_steps_set = (
-            set(self.ttt_cfg.score_seq_steps_list)
-            if self.ttt_cfg.score_seq_steps_list is not None
-            else None
-        )
+
         device = next(self.parameters()).device
         non_blocking = device.type == "cuda"
         cached_trainable_params = [p for p in self.parameters() if p.requires_grad]
@@ -364,7 +360,6 @@ class TTTModule(torch.nn.Module, ABC):
             scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lr_mult)
 
         # Run TTT loop
-        # x = x.to(next(self.parameters()).device)
         loss = None
         self.eval()
         for step in range(self.ttt_cfg.steps * self.ttt_cfg.ags + 1):
@@ -473,6 +468,13 @@ class TTTModule(torch.nn.Module, ABC):
             # Last step is just for logging
             if step == self.ttt_cfg.steps * self.ttt_cfg.ags:
                 break
+
+            # Move the sampled batch to the GPU
+            batch_masked = batch_masked.to(device, non_blocking=non_blocking)
+            targets = targets.to(device, non_blocking=non_blocking)
+            mask = mask.to(device, non_blocking=non_blocking)
+            if start_indices is not None:
+                start_indices = start_indices.to(device, non_blocking=non_blocking)
 
             # Forward pass
             self.train()
