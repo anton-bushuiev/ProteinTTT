@@ -77,6 +77,7 @@ class TTTConfig:
     bert_leave_prob: float = 0.1
     bert_replace_prob: float = 0.1
     loss_kind: str = "cross_entropy"  # T.Literal['cross_entropy', 'unnormalized_cross_entropy', 'msa_soft_labels' TODO]
+    model_kind: str = "bidirectional"  # T.Literal['bidirectional', 'autoregressive']
     msa: T.Optional[bool] = False
     msa_cache_dir: Path = Path.home() / ".cache" / "ttt"
     score_seq_kind: T.Optional[
@@ -160,6 +161,25 @@ class TTTConfig:
                 "lora_diffusion is not installed. Please install it with "
                 "`pip install git+https://github.com/cloneofsimo/lora.git`."
             )
+
+        if self.model_kind not in ['bidirectional', 'autoregressive']:
+            raise ValueError(
+                f"Invalid model kind: {self.model_kind}. Valid model kinds are 'bidirectional' and 'autoregressive'"
+            )
+
+        if self.model_kind == "autoregressive":
+            if self.loss_kind != "unnormalized_cross_entropy":
+                raise ValueError(
+                    "Only loss kind 'unnormalized_cross_entropy' is supported for autoregressive models"
+                )
+            if self.batch_size != 1:
+                raise ValueError(
+                    "Batch size must be 1 for autoregressive models"
+                )
+            if self.score_seq_kind is not None:
+                raise ValueError(
+                    "Scoring for autoregressive models is not implemented yet"
+                )
 
         if self.tmalign_path is not None and not self.tmalign_path.exists():
             raise FileNotFoundError(f"TMalign executable not found at {self.tmalign_path}")
@@ -458,9 +478,17 @@ class TTTModule(torch.nn.Module, ABC):
             if self.ttt_cfg.loss_kind == "cross_entropy":
                 loss = self._ttt_cross_entropy_loss(logits, targets, mask)
             elif self.ttt_cfg.loss_kind == "unnormalized_cross_entropy":
-                loss = self._ttt_unnormalized_cross_entropy_loss(
-                    logits, targets, mask
-                )
+                if self.ttt_cfg.model_kind == "bidirectional":
+                    loss = self._ttt_unnormalized_cross_entropy_loss(
+                        logits, targets, mask
+                    )
+                elif self.ttt_cfg.model_kind == "autoregressive":
+                    seq_start = start_indices[0]  # [0] because batch size is always 1 for autoregressive models
+                    seq_end = seq_start + self.ttt_cfg.crop_size
+                    targets = x[:, seq_start + 1:seq_end]  # + 1 for teacher forcing, logits should be shifted by - 1 in TTTModule._ttt_predict_logits
+                    loss = self._ttt_unnormalized_cross_entropy_loss(
+                        logits, targets, None
+                    )
             elif self.ttt_cfg.loss_kind == "msa_soft_labels":
                 loss = self._ttt_msa_soft_labels_loss(
                     logits, targets, mask, msa, start_indices
