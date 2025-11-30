@@ -7,7 +7,7 @@ from proteinttt.base import TTTModule, TTTConfig
 
 
 DEFAULT_DPLM2BIT_TTT_CFG = TTTConfig(
-    lr=4e-6, batch_size=2, ags=4, steps=10
+    lr=4e-4, batch_size=4, ags=2, steps=10
 )
 
 
