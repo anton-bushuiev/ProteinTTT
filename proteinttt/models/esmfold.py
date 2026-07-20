@@ -90,7 +90,19 @@ class ESMFoldTTT(TTTModule, ESMFold):
     ) -> T.Tuple[dict, dict, T.Optional[float]]:
         # Predict structure
         with torch.no_grad():
-            output = self.infer(seq, masking_pattern=None)
+            try:
+                output = self.infer(seq, masking_pattern=None)
+            except IndexError:
+                # compute_tm in openfold crashes when the model produces NaN
+                # logits (NaN != NaN so .nonzero() returns empty tensor).
+                # Return sentinel values so TTT can continue.
+                eval_step_preds = {"pdb": None}
+                eval_step_metric_dict = {
+                    "plddt": 0.0,
+                    "tm_score": None,
+                    "lddt": None,
+                }
+                return eval_step_preds, eval_step_metric_dict, 0.0
 
         pdb_str = self.output_to_pdb(output)
         plddt = output["mean_plddt"].item()
