@@ -6,11 +6,12 @@ from proteinttt.utils.boltz1_mmseqs2 import run_mmseqs2
 
 
 def process_msa_seq(seq: str, replace_inserstions: Optional[str] = None, delete_lowercase: bool = True) -> str:
+    seq = seq.replace("\x00", "")
     if delete_lowercase:
         for char in seq:
             if char.islower():
                 seq = seq.replace(char, "")
-                
+
     seq = seq.upper()
     seq = seq.replace(".", "-")
     if replace_inserstions is not None:
