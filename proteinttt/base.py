@@ -603,11 +603,10 @@ class TTTModule(torch.nn.Module, ABC):
                 else:
                     # Apply gradient clipping if enabled in config
                     if self.ttt_cfg.gradient_clip and len(trainable_params) > 0:
-                        total_norm = torch.nn.utils.clip_grad_norm_(
+                        torch.nn.utils.clip_grad_norm_(
                             trainable_params, 
                             max_norm=self.ttt_cfg.gradient_clip_max_norm
                         )
-                        # self.ttt_logger.info(f"Total gradient norm: {total_norm}")                    
                     optimizer.step()
                     if scheduler is not None:
                         scheduler.step()
