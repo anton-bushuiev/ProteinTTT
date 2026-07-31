@@ -1,0 +1,25 @@
+# ESMFold+ProteinTTT_MSA Configuration
+
+df_path: ""
+max_sequence_length: 500
+
+msa: true
+msa_sampling_strategy: "neighbors"
+gradient_clip: true
+gradient_clip_max_norm: 1.5
+compute_step_metrics: true 
+confidence_collapse_ratio: 0.7
+confidence_collapse_patience: 3
+steps: 20
+lr: 0.04
+lora_rank: 64
+lora_alpha: 128
+ags: 64
+mask_ratio: 0.2
+
+seed: 0  
+
+input:
+  summary_file: ""
+  pdb_dir: ""
+  msa_dir: ""
