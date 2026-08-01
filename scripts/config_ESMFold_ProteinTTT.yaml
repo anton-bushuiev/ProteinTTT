@@ -1,0 +1,23 @@
+# ESMFold+ProteinTTT Configuration
+
+df_path: ""
+max_sequence_length: 500
+
+msa: false
+compute_step_metrics: true 
+confidence_collapse_ratio: 0.7
+confidence_collapse_patience: 3
+lr: 0.0004
+batch_size: 4
+ags: 4
+steps: 30
+lora_rank: 8
+lora_alpha: 32.0
+
+seed: 0 
+
+input:
+  summary_file: ""
+  pdb_dir: ""
+  msa_dir: ""
+

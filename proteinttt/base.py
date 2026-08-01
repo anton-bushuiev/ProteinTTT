@@ -104,6 +104,11 @@ class TTTConfig:
     gradient_clip: bool = False
     gradient_clip_max_norm: float = 1.0
 
+    msa_sampling_strategy: str = "random"  # 'random', 'top', 'neighbors', 'cluster'
+
+    confidence_collapse_ratio: float = 0.0  # Early-stop when confidence < ratio * best_confidence. 0.0 = disabled.
+    confidence_collapse_patience: int = 3  # Number of consecutive collapsed steps before early stopping
+
     lr_scheduler: str | None = None  # None, 'cosine', 'cosine_warmup'
     lr_warmup_steps: int = 0  
     lr_min: float = 0.0
@@ -190,6 +195,12 @@ class TTTConfig:
                 raise ValueError(
                     "Scoring for autoregressive models is not implemented yet"
                 )
+
+        if self.msa_sampling_strategy not in ("random", "top", "neighbors", "cluster"):
+            raise ValueError(
+                f"Invalid msa_sampling_strategy: {self.msa_sampling_strategy}. "
+                "Valid options are 'random', 'top', 'neighbors', 'cluster'."
+            )
 
         if self.tmalign_path is not None and not self.tmalign_path.exists():
             raise FileNotFoundError(f"TMalign executable not found at {self.tmalign_path}")
@@ -332,7 +343,6 @@ class TTTModule(torch.nn.Module, ABC):
             ):
                 msa.append(self._ttt_tokenize(seq_msa, **kwargs).squeeze(0))
             msa = torch.stack(msa)  # [msa_len, seq_len]
-            self.ttt_logger.info(f"Number of sequences in MSA: {msa.shape[0]}")
 
             # Check the MSA contains the target sequence as the first sequence
             assert torch.all(
@@ -343,6 +353,28 @@ class TTTModule(torch.nn.Module, ABC):
             # - except for MSA soft labels where MSA is only used for loss calculation
             if not self.ttt_cfg.loss_kind == "msa_soft_labels":
                 x = msa
+
+        # Pre-compute MSA sampling data for non-random strategies
+        self._msa_sampling_weights = None
+        self._msa_cluster_labels = None
+        if self.ttt_cfg.msa and x.shape[0] > 1:
+            import numpy as np
+            if self.ttt_cfg.msa_sampling_strategy == "neighbors":
+                from proteinttt.utils.sampling import compute_homology_weights
+                gap_token = self._ttt_get_padding_token()
+                msa_np = x.cpu().numpy().astype(np.uint8)
+                _, weights = compute_homology_weights(ungapped_msa=msa_np, gap_token=gap_token)
+                self._msa_sampling_weights = torch.from_numpy(weights).float()
+            elif self.ttt_cfg.msa_sampling_strategy == "cluster":
+                from proteinttt.utils.ClusterMSA import cluster_msa
+                msa_np = x.cpu().numpy().astype(np.uint8)
+                self._msa_cluster_labels = cluster_msa(msa_np)
+                n_clusters = len(set(self._msa_cluster_labels) - {-1})
+                self.ttt_logger.info(
+                    f"MSA clustered into {n_clusters} clusters "
+                    f"({(self._msa_cluster_labels == -1).sum()} unclustered)"
+                )
+
         # Get trainable parameters and optimizer
         parameters = self._ttt_get_parameters()
         optimizer = self._ttt_get_optimizer(parameters)
@@ -358,6 +390,7 @@ class TTTModule(torch.nn.Module, ABC):
         if self.ttt_cfg.automatic_best_state_reset:
             best_confidence = 0
             best_state = None
+            collapse_streak = 0  # consecutive steps where confidence collapsed
 
         device = next(self.parameters()).device
         non_blocking = device.type == "cuda"
@@ -450,6 +483,23 @@ class TTTModule(torch.nn.Module, ABC):
                         if confidence > best_confidence:
                             best_confidence = confidence
                             best_state = self._ttt_get_state()
+                            collapse_streak = 0
+                        elif (
+                            self.ttt_cfg.confidence_collapse_ratio > 0
+                            and best_confidence > 0
+                            and confidence < self.ttt_cfg.confidence_collapse_ratio * best_confidence
+                        ):
+                            collapse_streak += 1
+                            if collapse_streak >= self.ttt_cfg.confidence_collapse_patience:
+                                self.ttt_logger.info(
+                                    f"Early stopping at step {step // self.ttt_cfg.ags}: "
+                                    f"confidence {confidence:.2f} collapsed below "
+                                    f"{self.ttt_cfg.confidence_collapse_ratio:.0%} of best "
+                                    f"({best_confidence:.2f}) for {collapse_streak} consecutive steps"
+                                )
+                                break
+                        else:
+                            collapse_streak = 0
                 else:
                     eval_step_metric_dict = {}
                     eval_step_preds = None
@@ -557,7 +607,6 @@ class TTTModule(torch.nn.Module, ABC):
                             trainable_params, 
                             max_norm=self.ttt_cfg.gradient_clip_max_norm
                         )
-                    
                     optimizer.step()
                     if scheduler is not None:
                         scheduler.step()
@@ -828,6 +877,52 @@ class TTTModule(torch.nn.Module, ABC):
                 delattr(self, k)
             self.add_module(k, copy.deepcopy(v))
 
+    def _ttt_cluster_sample_indices(
+        self,
+        cluster_labels,
+        batch_size: int,
+        replacement: bool = False,
+    ) -> torch.Tensor:
+        """Sample MSA indices by cycling through DBSCAN clusters.
+
+        Ensures each batch contains sequences from diverse clusters
+        (adapted from AF_Cluster: https://github.com/HWaymentSteele/AF_Cluster).
+
+        Args:
+            cluster_labels: Cluster ID per MSA row (-1 = unclustered).
+            batch_size: Number of indices to return.
+            replacement: Allow sampling the same sequence twice.
+
+        Returns:
+            Tensor of selected MSA indices [batch_size].
+        """
+        import numpy as np
+
+        unique_labels = sorted(set(cluster_labels) - {-1})
+        if len(unique_labels) == 0:
+            # No clusters found — fall back to random
+            return torch.randint(
+                0, len(cluster_labels), (batch_size,), generator=self.ttt_generator
+            )
+
+        # Build member lists per cluster
+        members = {l: np.where(cluster_labels == l)[0] for l in unique_labels}
+
+        # Shuffle cluster order each call so all clusters are visited over time
+        shuffled_labels = unique_labels.copy()
+        perm = torch.randperm(len(shuffled_labels), generator=self.ttt_generator).tolist()
+        shuffled_labels = [shuffled_labels[i] for i in perm]
+
+        indices = []
+        for i in range(batch_size):
+            cid = shuffled_labels[i % len(shuffled_labels)]
+            pool = members[cid]
+            idx = pool[
+                torch.randint(0, len(pool), (1,), generator=self.ttt_generator).item()
+            ]
+            indices.append(idx)
+        return torch.tensor(indices, dtype=torch.long)
+
     def _ttt_sample_batch(
         self, x: torch.Tensor
     ) -> T.Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -848,23 +943,53 @@ class TTTModule(torch.nn.Module, ABC):
         crop_size = self.ttt_cfg.crop_size
 
         # Create batch of unmasked and uncropped sequences
+        strategy = self.ttt_cfg.msa_sampling_strategy
+        weights = getattr(self, "_msa_sampling_weights", None)
+        cluster_labels = getattr(self, "_msa_cluster_labels", None)
+
         if x.shape[0] == 1:
             # If only one sequence, replicate it batch_size times
             x_expanded = x.expand(batch_size, -1)
         elif x.shape[0] >= batch_size:
-            # If multiple sequences available, randomly sample batch_size sequences
-            indices = torch.randint(
-                0, x.shape[0], (batch_size,), generator=self.ttt_generator
-            )
+            # If multiple sequences available, sample batch_size sequences
+            if strategy == "top":
+                indices = torch.arange(batch_size)
+            elif strategy == "neighbors" and weights is not None:
+                indices = torch.multinomial(
+                    weights, batch_size, replacement=False,
+                    generator=self.ttt_generator,
+                )
+            elif strategy == "cluster" and cluster_labels is not None:
+                indices = self._ttt_cluster_sample_indices(
+                    cluster_labels, batch_size, replacement=False,
+                )
+            else:  # "random"
+                indices = torch.randint(
+                    0, x.shape[0], (batch_size,), generator=self.ttt_generator
+                )
             x_expanded = x[indices]
         else:  # 1 < x.shape[0] < batch_size
-            # If fewer sequences than batch_size, replicate sequences up to batch_size
-            num_repeats = batch_size // x.shape[0] + 1
-            x_repeated = x.repeat(num_repeats, 1)
-            indices = torch.randperm(
-                x_repeated.shape[0], generator=self.ttt_generator
-            )[:batch_size]
-            x_expanded = x_repeated[indices]
+            if strategy == "top":
+                num_repeats = batch_size // x.shape[0] + 1
+                x_expanded = x.repeat(num_repeats, 1)[:batch_size]
+            elif strategy == "neighbors" and weights is not None:
+                indices = torch.multinomial(
+                    weights, batch_size, replacement=True,
+                    generator=self.ttt_generator,
+                )
+                x_expanded = x[indices]
+            elif strategy == "cluster" and cluster_labels is not None:
+                indices = self._ttt_cluster_sample_indices(
+                    cluster_labels, batch_size, replacement=True,
+                )
+                x_expanded = x[indices]
+            else:  # "random"
+                num_repeats = batch_size // x.shape[0] + 1
+                x_repeated = x.repeat(num_repeats, 1)
+                indices = torch.randperm(
+                    x_repeated.shape[0], generator=self.ttt_generator
+                )[:batch_size]
+                x_expanded = x_repeated[indices]
 
         # Sample crop_size-tokens cropped subsequences
         if seq_len < crop_size:
